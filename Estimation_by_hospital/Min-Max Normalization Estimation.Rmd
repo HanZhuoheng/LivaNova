@@ -1,0 +1,117 @@
+---
+title: "Estimation by Hospital"
+author: "Zhuoheng Han, Ziyan Xia"
+date: "4/22/2022"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+# Top-down Method Using PCA
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+We loaded the cleaned data and defined the total population of DRE patients based on the zip code dataset. 
+
+```{r}
+library(dplyr)
+dat <- read.csv("~/Desktop/CMU/36-672_Statistical_Practice/LivaNova/Data_processing/cleaned_df_zip.csv")
+#total_epi <- 3423550+150000*7
+#total_DRE <- total_epi/3
+
+total_DRE <- 1523075
+```
+
+According to the correlation plot, we found that most numerical variables are highly correlated
+
+```{r}
+library(corrplot)
+dat_num <- dat %>% select(-c("ccn","cec","zip",'impute_discharge', 'impute_drg100','impute_drg101','impute_neuro1','impute_neuro2'))
+corrplot(cor(dat_num), method = "number")
+```
+
+
+### Estimate the number of cec and non-cec DRE patients
+
+We estimate the number of cec and non-cec patients using the sum of total discharges
+```{r}
+dat_0<-dat[which(dat$cec==0),]
+dat_1<-dat[which(dat$cec==1),]
+sum_0<-sum(dat_0$num_neuro_afl_1)
+sum_1<-sum(dat_1$num_neuro_afl_1)
+n_0<-(sum_0/(sum_0+sum_1))*total_DRE
+n_1<-(sum_1/(sum_0+sum_1))*total_DRE
+data.frame(non_cec_patients=n_0,cec_patients=n_1)%>% knitr::kable()
+```
+
+### Min-Max Normalization
+
+The formula for a min-max normalization is$$\frac{X – min(X)}{max(X) – min(X)}$$
+
+For each value of a variable, we simply find how far that value is from the minimum value, then divide by the range. 
+We normalize all the numerical variables and use the average value of these normalized variables as our new variable. Using $$weight=\frac{this \ variable}{the\ sum\ of\ this\ variable}$$ we will get the population weight for each hospital and therefore could calculate the estimation of DRE patients for each hospital.
+
+```{r}
+min_max_norm <- function(x) {
+    (x - min(x)) / (max(x) - min(x))
+}
+dat_0_norm <- as.data.frame(lapply(dat_0 %>% select(-c("ccn","cec","zip",'impute_discharge', 'impute_drg100','impute_drg101','impute_neuro1','impute_neuro2')), min_max_norm))
+dat_1_norm <- as.data.frame(lapply(dat_1 %>% select(-c("ccn","cec","zip",'impute_discharge', 'impute_drg100','impute_drg101','impute_neuro1','impute_neuro2')) ,min_max_norm))
+
+dat_0_norm$avg<-(dat_0_norm$total_discharges+dat_0_norm$drg_100+dat_0_norm$drg_101+dat_0_norm$total_beds_min+dat_0_norm$total_beds_max+dat_0_norm$num_neuro_afl_1+dat_0_norm$num_neuro_afl_2)/7
+
+dat_0_norm$weights<-dat_0_norm$avg/sum(dat_0_norm$avg)
+dat_0$estimation<-round(dat_0_norm$weights*n_0)
+
+dat_1_norm$avg<-(dat_1_norm$total_discharges+dat_1_norm$drg_100+dat_1_norm$drg_101+dat_1_norm$total_beds_min+dat_1_norm$total_beds_max+dat_1_norm$num_neuro_afl_1+dat_1_norm$num_neuro_afl_2)/7
+
+dat_1_norm$weights<-dat_1_norm$avg/sum(dat_1_norm$avg)
+dat_1$estimation<-round(dat_1_norm$weights*n_1)
+
+rbind(head(dat_0,5),head(dat_1,5))%>% knitr::kable()
+```
+
+```{r}
+estimate_df <- rbind(dat_0,dat_1)
+```
+
+```{r}
+location <- read.csv("~/Desktop/CMU/36-672_Statistical_Practice/LivaNova/Estimation_by_zipcode/uszips.csv")
+all <- left_join(estimate_df, location[,1:3], by="zip")
+all$cec<-as.factor(all$cec)
+```
+
+```{r}
+library(leaflet)
+leaflet(all) %>%
+  addTiles() %>% addCircleMarkers(
+    lat = ~lat, lng = ~lng,
+    radius = sqrt(all$estimation)*.3,
+    fillColor = ~ifelse(all$cec == 0,"#CD6155", "green"),
+    stroke = FALSE, 
+    fillOpacity = .3)
+```
+
+```{r}
+pal <- colorNumeric(
+  palette = 'RdYlBu',
+  domain = all$estimation,
+  n = 10
+)
+
+leaflet(all) %>%
+  addTiles() %>% addCircleMarkers(
+    lat = ~lat, lng = ~lng,
+    radius = 3,
+    fillColor = ~pal(estimation),
+    stroke = FALSE) %>%
+  addLegend("bottomright", pal = pal, values = ~estimation)
+```
+
+
