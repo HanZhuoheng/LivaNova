@@ -1,0 +1,226 @@
+---
+title: "Hospital Data Preprocessing"
+author: "Team LivaNova"
+date: "3/19/2022"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+```{r, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(janitor)
+library(knitr)
+```
+
+# Cleaning Datasets
+
+### Hospital Capacity
+
+We used 'COVID-19_Reported_Patient_Impact_and_Hospital_Capacity_by_Facility.csv' public dataset provided by HealthData, which can be found at https://healthdata.gov/Hospital/COVID-19-Reported-Patient-Impact-and-Hospital-Capa/anag-cw7u/data.
+
+```{r, warning = FALSE, message=FALSE}
+capacity <- read_csv('~/Desktop/CMU/36-672_Statistical_Practice/LivaNova/Data/COVID-19_Reported_Patient_Impact_and_Hospital_Capacity_by_Facility.csv', 
+                na = c("", "NA", "-999999", -999999, "-999999.0")) %>% clean_names()
+```
+
+We pre-processed the data by calculating the the minimum and maximum 7-day-average total beds for each hospital. 7-day-average total beds include the total number of all staffed inpatient and outpatient beds in the hospital reported during the 7-day period. The reason why we want to include the total bed information is that it can reflect the size and reputation of one hospital. Besides, it can also affect which hospital that DRE patients decide to seek for treatment. The top 5 rows of final capacity table are shown as below. 
+
+```{r}
+capacity_mini <- capacity %>% 
+  filter(!is.na(ccn),
+         state != 'PR') %>%
+  group_by(ccn) %>%
+  summarise(total_beds_min = min(total_beds_7_day_avg, na.rm=TRUE),
+            total_beds_max = max(total_beds_7_day_avg, na.rm=TRUE))
+
+capacity_mini %>% head(5) %>% kable()
+```
+
+### DRG Discharge
+
+We used 'Medicare_Inpatient_Hospital_by_Provider_and_Service_2019.csv' public dataset provided by CMS. Information of the dataset can be found at https://data.cms.gov/provider-summary-by-type-of-service/medicare-inpatient-hospitals/medicare-inpatient-hospitals-by-provider-and-service.
+
+```{r}
+cms_drg_code <- read_csv('~/Desktop/CMU/36-672_Statistical_Practice/LivaNova/Data/Medicare_Inpatient_Hospital_by_Provider_and_Service_2019.csv') %>% clean_names()
+```
+
+The reason why we cared about the total discharges of DRG codes 100 and 101 is that DRG 100 represents seizures with MCC (major complication or comorbidity, these diagnoses have a larger impact on a patient's stay and always requires additional interventions) and DRG 101 represents seizures without MCC. We summed up the total discharges, total DRG 100 discharges, and total DRG 101 discharges per hospital. The top 5 rows of final discharge table are shown as below: 
+
+```{r}
+cms_seizures <- cms_drg_code %>%
+  group_by(rndrng_prvdr_ccn) %>%
+  summarise(total_discharges = sum(tot_dschrgs),
+            drg_100 = sum(tot_dschrgs[drg_cd == 100]),
+            drg_101 = sum(tot_dschrgs[drg_cd == 101])) %>%
+  ungroup() %>%
+  rename(ccn = rndrng_prvdr_ccn)
+
+cms_seizures %>% head(5) %>% kable()
+```
+
+### CEC
+
+We used ‘cec_lookup.csv’ dataset provided by LivaNova. Information of the comprehensive epilepsy center can be found at https://www.naec-epilepsy.org/about-epilepsy-centers/find-an-epilepsy-center/all-epilepsy-center-locations/.
+
+```{r}
+cec_df <- read_csv('~/Desktop/CMU/36-672_Statistical_Practice/LivaNova/Data/cec_lookup.csv') %>% clean_names()
+```
+
+We filtered the hospitals that are comprehensive epilepsy centers.
+
+```{r}
+cec_1 <- cec_df %>% select(ccn, cec) %>% filter(cec == 1)
+```
+
+### Provider
+
+We used ‘npi_providers_clean.csv’ dataset provided by LivaNova. 
+
+NPI registry to find the number of neurologists / other types per hospital can be found in
+https://www.cms.gov/Regulations-and-Guidance/Administrative-Simplification/NationalProvIdentStand/DataDissemination.
+
+CMS doctor physician registry information can be found in https://data.cms.gov/provider-data/topics/doctors-clinicians.
+
+```{r}
+provider <- read_csv('~/Desktop/CMU/36-672_Statistical_Practice/LivaNova/Data/npi_providers_clean.csv') %>% clean_names()
+```
+
+We filtered out the "neurologist" and "neurosurgeon" from the original dataset. After that, we checked there are no duplicated affiliations. Then we calculated the the total number of neurologist and neurosurgeon by hospital.
+
+```{r}
+neuro_df <- provider %>% filter(grepl('neuro',tolower(provider_type_description)))
+
+affiliation1 <- neuro_df %>%
+  filter(!is.na(hosp_afl_1)) %>%
+  group_by(hosp_afl_1) %>%
+  count() %>%
+  rename(ccn = hosp_afl_1, num_neuro_afl_1 = n)
+
+affiliation2 <- neuro_df %>%
+  filter(!is.na(hosp_afl_2)) %>%
+  group_by(hosp_afl_2) %>%
+  count() %>%
+  rename(ccn = hosp_afl_2, num_neuro_afl_2 = n)
+```
+
+The final dataset including the number of "neurologist" and "neurosurgeon" for two affiliations is shown as below. 
+
+```{r}
+neuro_df_merged <- merge(affiliation1, affiliation2, by="ccn", all.x=TRUE)
+
+neuro_df_merged %>% head(5) %>% kable()
+```
+
+# Merging Datasets
+
+We fully joined the hospital capacity and discharge information on the ccn. After doing this, we left joined cec information and the number of neurologists and neurosurgeons to the previous joined dataset on ccn. Our final dataset has 5091 rows and 9 columns. The description of variables is given below: 
+
+ccn: CMS Certification Number (CCN) of the given facility
+
+total_discharges: The number of discharges billed by all providers for inpatient hospital services
+
+drg_100: The number of discharges billed by DRG 101 for inpatient hospital services 
+
+drg_101: The number of discharges billed by DRG 101 for inpatient hospital services 
+
+total_beds_min: The minimum number for an average total number of all staffed inpatient and outpatient beds in the hospital reported during the 7-day period (different collection weeks)
+
+total_beds_max: The maximum number for an average total number of all staffed inpatient and outpatient beds in the hospital reported during the 7-day period (different collection weeks)
+
+cec: Whether the hospital is accredited as CEC centers
+
+num_neuro_afl_1: The total number of neurologists and neurosurgeons if this hospital is the first affiliation
+
+num_neuro_afl_2: The total number of neurologists and neurosurgeons if this hospital is the second affiliation
+
+```{r}
+merge_cmsseizures_icu <- merge(cms_seizures, capacity_mini, by="ccn", all=TRUE)
+```
+
+```{r}
+merge_cmsseizures_icu_cec <- merge(merge_cmsseizures_icu, cec_1, by="ccn", all.x=TRUE) %>% distinct(ccn, .keep_all = TRUE)
+```
+
+```{r}
+merge_df <- merge(merge_cmsseizures_icu_cec, neuro_df_merged, by = "ccn", all.x = TRUE) %>% distinct(ccn, .keep_all = TRUE)
+```
+
+# Dealing with Missing Values
+
+First, we realized that there were inf in our merged dataset. For convenience, we changed inf into NA and investigated how many NA's were in the dataset.
+
+```{r}
+merge_df <- do.call(data.frame,lapply
+              (merge_df, function(x) replace(x, is.infinite(x), NA)))
+
+sapply(merge_df[,-1], function(x) sum(is.na(x))) %>% kable()
+```
+
+We replaced all NAs of cec column to 0 since important hospitals which are comprehensive epilepsy centers are marked as 1, which means those NA's in the dataset are not comprehensive epilepsy centers. 
+
+```{r}
+merge_df_cleaned <- merge_df %>% 
+  mutate(cec=replace(cec, is.na(cec), 0))
+
+merge_df_cleaned$impute_discharge <- as.numeric(is.na(merge_df_cleaned$total_discharges))
+merge_df_cleaned$impute_drg100 <- as.numeric(is.na(merge_df_cleaned$drg_100))
+merge_df_cleaned$impute_drg101 <- as.numeric(is.na(merge_df_cleaned$drg_101))
+merge_df_cleaned$impute_neuro1 <- as.numeric(is.na(merge_df_cleaned$num_neuro_afl_1))
+merge_df_cleaned$impute_neuro2 <- as.numeric(is.na(merge_df_cleaned$num_neuro_afl_2))
+```
+
+Here is a visualization of the missing values after imputing 0's to cec. There are total 29% missing values in our dataset and large proportions of missing values are due to the discharge and total number of neurologists and neurosurgeons. There are 38.68% of missing values for each total_discharge, drg_100, drg_101 column. There are 56.2% of missing values for total number of neurologists and neurosurgeons. 
+
+```{r}
+library(naniar)
+library(ggplot2)
+temp <- merge_df_cleaned[-c(1,10:14)]
+vis_miss(temp)+theme(axis.text.x =  element_text(angle = 75))
+```
+
+After that, we used MICE library with PMM (predictive mean matching) method to replace all other NAs in numeric columns. Compared with standard methods based on linear regression and the normal distribution, PMM produces imputed values that are much more like real values. To be more sepecific, variables in our dataset are skewed, the imputed values calculated by this method would show skewness (We can see that in next two visualizations).
+
+```{r, message=FALSE, results='hide'}
+library(mice)
+tempData <- mice(temp, m=1, maxit=50, meth='pmm', seed=123)
+completedData <- complete(tempData,1)
+```
+
+From the density plots, the blue lines are the densities of original data, and the red lines are the densities of imputed data. All imputations follow the original densities (skewed to the right). The peaks of the densities of the imputed data are closely at the same peaks of the densities of the original data.
+
+```{r}
+densityplot(tempData)
+```
+
+All in all, this imputation is reasonable so we are going to use this imputed dataset for our estimations of the number of epilepsy patients for each hospital. 
+
+```{r}
+cleaned_df <- data.frame(merge_df_cleaned[c('ccn','impute_discharge', 'impute_drg100','impute_drg101','impute_neuro1','impute_neuro2')], completedData)
+cleaned_df %>% head(5) %>% kable()
+```
+
+```{r}
+cap_zip <- capacity %>% select(ccn, zip) %>% distinct(ccn, .keep_all = TRUE)
+
+cms_zip <- cms_drg_code %>% select(rndrng_prvdr_ccn, rndrng_prvdr_zip5) %>% 
+  distinct(rndrng_prvdr_ccn, .keep_all = TRUE) %>% 
+  rename(ccn = rndrng_prvdr_ccn, zipcode = rndrng_prvdr_zip5)
+```
+
+```{r}
+ccn_zip <- cap_zip %>% merge(cms_zip, by="ccn", all=TRUE) %>% mutate(zip = coalesce(zip, zipcode)) %>% select(ccn, zip)
+
+cleaned_df_zip <- merge(cleaned_df, ccn_zip, by="ccn", all.x=TRUE)
+```
+
+
